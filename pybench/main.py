@@ -78,42 +78,10 @@ def _parse_conf(path):
         raise NotFound("cannot open %s" % path)
 
     executables = {}
+
     for exec_key in executors:
         executable = executors[exec_key]['path'] + "/" + executors[exec_key]['executable']
         executables[exec_key] = executable
-
-    for exp_name in experiments:
-        executions = experiments[exp_name]["executions"]
-        for execution in executions:
-            for exec_name in execution:
-                exec_suites_values = execution[exec_name].values()
-                executable = executables[exec_name]
-                for exec_suites in exec_suites_values:
-                    for exec_suite in exec_suites:
-                        suite = suites[exec_suite]
-                        benchmarks = suite['benchmarks']
-                        command = suite['command']
-                        iterations = suite['iterations']
-                        command = command.replace("%(iterations)s", str(iterations))
-
-                        commands = []
-                        if 'variable_values' in suite:
-                            variable_values = suite['variable_values']
-                            for variable_value in variable_values:
-                                newcommand = command.replace("%(variable)s", str(variable_value))
-                                commands.append(executable + " " + newcommand)
-
-                        for benchmark in benchmarks:
-                            benchmark_name = next(iter(benchmark))
-                            extra_args = benchmark[benchmark_name]['extra_args']
-                            variable_values = None
-                            if 'variable_values' in benchmark:
-                                variable_values = benchmark['variable_values']
-
-                            for command in commands:
-                                cmdline = command.replace("%(benchmark)s", benchmark_name)
-                                cmdline = cmdline + str(extra_args)
-                                print(cmdline)
 
     if not default_data_file:
         raise NotFound("no default_data_file")
@@ -121,7 +89,8 @@ def _parse_conf(path):
     if not suites:
         raise NotFound("no benchmark_suites")
 
-    return {"default_data_file": default_data_file, "suites": suites}
+    return {"default_data_file": default_data_file,  "experiments": experiments,
+            "suites": suites, "executables": executables}
 
 
 def _parse_cpu_brand(brand):
@@ -131,6 +100,62 @@ def _parse_cpu_brand(brand):
         return "Intel"
     else:
         return "Unknown"
+
+
+def _print_header():
+    print("execution\tbenchmark\titerations\tinvocations\telapsed time (ms)")
+
+
+def _fill_blank_command(command, variable, value):
+    for i, c in enumerate(command):
+        if variable in c:
+            new_c = c.replace(variable, str(value))
+            command[i] = new_c
+    return command
+
+
+def execute_suites(configuration):
+    default_data_file = configuration["default_data_file"]
+    experiments = configuration["experiments"]
+    suites = configuration["suites"]
+    executables = configuration["executables"]
+
+    _print_header()
+
+    for exp_name in experiments:
+        executions = experiments[exp_name]["executions"]
+        for execution in executions:
+            for exec_name in execution:
+                exec_suites = execution[exec_name]['suites']
+                executable = executables[exec_name]
+                for exec_suite in exec_suites:
+                    suite = suites[exec_suite]
+                    benchmarks = suite['benchmarks']
+                    cmdline = suite['command'].split()
+                    iterations = suite['iterations']
+                    invocations = suite['invocations']
+                    cmdline = _fill_blank_command(cmdline, "%(iterations)s", iterations)
+
+                    commands = []
+                    if 'variable_values' in suite:
+                        variable_values = suite['variable_values']
+                    else:
+                         commands.append([executable] + cmdline)
+
+                    for benchmark in benchmarks:
+                        benchmark_name = next(iter(benchmark))
+                        extra_args = benchmark[benchmark_name]['extra_args'] \
+                            if 'extra_args' in benchmark[benchmark_name] else None
+                        variable_values = benchmark['variable_values'] \
+                            if 'variable_values' in benchmark else None
+
+                        for cmdline in commands:
+                            cmdline = _fill_blank_command(cmdline, "%(benchmark)s", benchmark_name)
+                            cmdline = cmdline + [str(extra_args)]
+                            output = subprocess.check_output(cmdline)
+                            results = output.splitlines()
+                            for l in results:
+                                print(l)
 
 
 def reset():
@@ -156,4 +181,5 @@ def main():
 
 if __name__ == "__main__":
     # main()
-    _parse_conf("runbench.conf")
+    conf = _parse_conf("test.conf")
+    execute_suites(conf)
