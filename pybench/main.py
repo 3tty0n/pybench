@@ -136,22 +136,27 @@ def execute_suites(configuration):
                     invocations = suite['invocations']
                     cmdline = _fill_blank_command(cmdline, "%(iterations)s", iterations)
 
-                    commands = []
-                    if 'variable_values' in suite:
-                        variable_values = suite['variable_values']
-                    else:
-                         commands.append([executable] + cmdline)
-
                     for benchmark in benchmarks:
                         benchmark_name = next(iter(benchmark))
                         extra_args = benchmark[benchmark_name]['extra_args'] \
                             if 'extra_args' in benchmark[benchmark_name] else None
-                        variable_values = benchmark['variable_values'] \
-                            if 'variable_values' in benchmark else None
+
+                        commands = []
+                        if 'variable_values' in benchmark[benchmark_name]:
+                            variable_values = benchmark[benchmark_name]['variable_values']
+                            for variable_value in variable_values:
+                                commands.append([executable] + cmdline + [str(variable_value)])
+                        elif 'variable_values' in suite:
+                            variable_values = benchmark[benchmark_name]['variable_values']
+                            for variable_value in variable_values:
+                                commands.append([executable] + cmdline + [str(variable_value)])
+                        else:
+                            commands.append([executable] + cmdline)
 
                         for cmdline in commands:
                             cmdline = _fill_blank_command(cmdline, "%(benchmark)s", benchmark_name)
-                            cmdline = cmdline + [str(extra_args)]
+                            if 'extra_args' in benchmark[benchmark_name]:
+                                cmdline = cmdline + [str(benchmark[benchmark_name]['extra_args'])]
                             output = subprocess.check_output(cmdline)
                             results = output.splitlines()
                             for l in results:
