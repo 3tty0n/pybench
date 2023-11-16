@@ -1,6 +1,7 @@
 import os
 import subprocess
 import math
+import re
 from pprint import pprint
 
 import yaml
@@ -67,20 +68,18 @@ def _parse_conf(path):
             suites = (
                 conf["benchmark_suites"] if "benchmark_suites" in conf.keys() else None
             )
-            executors = (
-                conf["executors"] if "executors" in conf.keys() else None
-            )
+            executors = conf["executors"] if "executors" in conf.keys() else None
 
-            experiments = (
-                conf["experiments"] if "experiments" in conf.keys() else None
-            )
+            experiments = conf["experiments"] if "experiments" in conf.keys() else None
     except IOError:
         raise NotFound("cannot open %s" % path)
 
     executables = {}
 
     for exec_key in executors:
-        executable = executors[exec_key]['path'] + "/" + executors[exec_key]['executable']
+        executable = (
+            executors[exec_key]["path"] + "/" + executors[exec_key]["executable"]
+        )
         executables[exec_key] = executable
 
     if not default_data_file:
@@ -89,8 +88,12 @@ def _parse_conf(path):
     if not suites:
         raise NotFound("no benchmark_suites")
 
-    return {"default_data_file": default_data_file,  "experiments": experiments,
-            "suites": suites, "executables": executables}
+    return {
+        "default_data_file": default_data_file,
+        "experiments": experiments,
+        "suites": suites,
+        "executables": executables,
+    }
 
 
 def _parse_cpu_brand(brand):
@@ -103,7 +106,7 @@ def _parse_cpu_brand(brand):
 
 
 def _print_header():
-    print("execution\tbenchmark\titerations\tinvocations\telapsed time (ms)")
+    print("iteration\tvalue\tbenchmark\texecutor")
 
 
 def _fill_blank_command(command, variable, value):
@@ -126,41 +129,63 @@ def execute_suites(configuration):
         executions = experiments[exp_name]["executions"]
         for execution in executions:
             for exec_name in execution:
-                exec_suites = execution[exec_name]['suites']
+                exec_suites = execution[exec_name]["suites"]
                 executable = executables[exec_name]
                 for exec_suite in exec_suites:
                     suite = suites[exec_suite]
-                    benchmarks = suite['benchmarks']
-                    cmdline = suite['command'].split()
-                    iterations = suite['iterations']
-                    invocations = suite['invocations']
+                    benchmarks = suite["benchmarks"]
+                    cmdline = suite["command"].split()
+                    iterations = suite["iterations"]
+                    invocations = suite["invocations"]
                     cmdline = _fill_blank_command(cmdline, "%(iterations)s", iterations)
 
                     for benchmark in benchmarks:
                         benchmark_name = next(iter(benchmark))
-                        extra_args = benchmark[benchmark_name]['extra_args'] \
-                            if 'extra_args' in benchmark[benchmark_name] else None
+                        extra_args = (
+                            benchmark[benchmark_name]["extra_args"]
+                            if "extra_args" in benchmark[benchmark_name]
+                            else None
+                        )
 
                         commands = []
-                        if 'variable_values' in benchmark[benchmark_name]:
-                            variable_values = benchmark[benchmark_name]['variable_values']
+                        if "variable_values" in benchmark[benchmark_name]:
+                            variable_values = benchmark[benchmark_name][
+                                "variable_values"
+                            ]
                             for variable_value in variable_values:
-                                commands.append([executable] + cmdline + [str(variable_value)])
-                        elif 'variable_values' in suite:
-                            variable_values = benchmark[benchmark_name]['variable_values']
+                                commands.append(
+                                    [executable] + cmdline + [str(variable_value)]
+                                )
+                        elif "variable_values" in suite:
+                            variable_values = benchmark[benchmark_name][
+                                "variable_values"
+                            ]
                             for variable_value in variable_values:
-                                commands.append([executable] + cmdline + [str(variable_value)])
+                                commands.append(
+                                    [executable] + cmdline + [str(variable_value)]
+                                )
                         else:
                             commands.append([executable] + cmdline)
 
                         for cmdline in commands:
-                            cmdline = _fill_blank_command(cmdline, "%(benchmark)s", benchmark_name)
-                            if 'extra_args' in benchmark[benchmark_name]:
-                                cmdline = cmdline + [str(benchmark[benchmark_name]['extra_args'])]
-                            output = subprocess.check_output(cmdline)
-                            results = output.splitlines()
-                            for l in results:
-                                print(l)
+                            cmdline = _fill_blank_command(
+                                cmdline, "%(benchmark)s", benchmark_name
+                            )
+                            if "extra_args" in benchmark[benchmark_name]:
+                                cmdline = cmdline + [
+                                    str(benchmark[benchmark_name]["extra_args"])
+                                ]
+
+                            for iteration in range(1, iterations + 1):
+                                out = subprocess.check_output(cmdline)
+                                p_runtime = re.compile(r"(?<=runtime: )[0-9]+")
+                                r_runtime = p_runtime.search(str(out))
+                                v_runtime = float(r_runtime.group())
+
+                                formatted = "{}\t{}\t{}\t{}".format(
+                                    iteration, v_runtime, benchmark_name, exec_name
+                                )
+                                print(formatted)
 
 
 def reset():
