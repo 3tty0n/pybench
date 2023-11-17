@@ -7,7 +7,12 @@ from pprint import pprint
 import yaml
 from cpuinfo import get_cpu_info
 
-from pybench.shield import _shield_num_core_bounds, _activate_shielding, _reset_shielding, _set_no_turbo
+from pybench.shield import (
+    _shield_num_core_bounds,
+    _activate_shielding,
+    _reset_shielding,
+    _set_no_turbo,
+)
 
 
 class NotFound(Exception):
@@ -64,112 +69,118 @@ def _parse_cpu_brand(brand):
         return "Unknown"
 
 
-def _write_header(data_file_path):
-    with open(data_file_path, "w") as f:
-        f.write("invocation\titeration\tvalue\tbenchmark\texecutor\n")
+class Executor:
+    def __init__(self, configuration):
+        self.default_data_file = configuration["default_data_file"]
+        self.experiments = configuration["experiments"]
+        self.suites = configuration["suites"]
+        self.executors = configuration["executors"]
+        self.executables = configuration["executables"]
 
+        self.base_dir = os.getcwd()
+        self.data_file_path = self.base_dir + "/" + self.default_data_file
 
-def _fill_blank_command(command, variable, value):
-    for i, c in enumerate(command):
-        if variable in c:
-            new_c = c.replace(variable, str(value))
-            command[i] = new_c
-    return command
+    def _write_header(self):
+        with open(self.data_file_path, "w") as f:
+            f.write("invocation\titeration\tvalue\tbenchmark\texecutor\n")
 
+    def _fill_blank_command(self, command, variable, value):
+        for i, c in enumerate(command):
+            if variable in c:
+                new_c = c.replace(variable, str(value))
+                command[i] = new_c
+        return command
 
-def execute_suites(configuration):
-    default_data_file = configuration["default_data_file"]
-    experiments = configuration["experiments"]
-    suites = configuration["suites"]
-    executors = configuration["executors"]
-    executables = configuration["executables"]
+    def _execute_and_dump_result(
+        self, cmdline, benchmark_name, executor, invocations,
+    ):
+        cmdline = self._fill_blank_command(cmdline, "%(benchmark)s", benchmark_name)
+        for invocation in range(1, invocations + 1):
+            output = subprocess.check_output(cmdline)
+            output_lines = output.splitlines()
+            for iteration, output_line in enumerate(output_lines):
+                p_runtime = re.compile(b"(?<=runtime: )[0-9]+")
+                r_runtime = p_runtime.search(output_line)
+                if r_runtime:
+                    v_runtime = float(r_runtime.group())
 
-    base_dir = os.getcwd()
+                    formatted = "{}\t{}\t{}\t{}\t{}\n".format(
+                        invocation,
+                        iteration,
+                        v_runtime,
+                        benchmark_name,
+                        executor,
+                    )
 
-    default_data_file_path = base_dir + "/" + default_data_file
+                    with open(self.data_file_path, "a") as data_file:
+                        data_file.write(formatted)
 
-    _write_header(default_data_file_path)
+    def execute(self):
+        self._write_header()
 
-    for exp_name in experiments:
-        executions = experiments[exp_name]["executions"]
-        for execution in executions:
-            for exec_name in execution:
-                exec_suites = execution[exec_name]["suites"]
-                executor = executors[exec_name]
-                executor_path = executor["path"]
-                executor_executable = "./" + executor["executable"]
-                executor_cmdline = [executor_executable]
+        for experiment in self.experiments:
+            executions = self.experiments[experiment]["executions"]
+            for execution in executions:
+                for executor in execution:
+                    exec_suites = execution[executor]["suites"]
+                    executable = self.executors[executor]
+                    executable_path = executable["path"]
+                    executor_cmdline = ["./" + executable["executable"]]
 
-                executor_args = None
-                if "args" in executor:
-                    executor_args = executor["args"].split()
-                    executor_cmdline.extend(executor_args)
+                    executor_args = None
+                    if "args" in executor:
+                        executor_args = executor["args"].split()
+                        executor_cmdline.extend(executor_args)
 
-                os.chdir(executor_path)
+                    os.chdir(executable_path)
 
-                for exec_suite in exec_suites:
-                    suite = suites[exec_suite]
-                    benchmarks = suite["benchmarks"]
-                    iterations = suite["iterations"]
-                    invocations = suite["invocations"]
+                    for exec_suite in exec_suites:
+                        suite = self.suites[exec_suite]
+                        benchmarks = suite["benchmarks"]
+                        iterations = suite["iterations"]
+                        invocations = suite["invocations"]
 
-                    for benchmark in benchmarks:
-                        benchmark_name = next(iter(benchmark))
-                        extra_args = (
-                            benchmark[benchmark_name]["extra_args"]
-                            if "extra_args" in benchmark[benchmark_name]
-                            else None
-                        )
-
-                        commands = []
-
-                        cmdline = suite["command"].split()
-                        cmdline = _fill_blank_command(cmdline, "%(iterations)s", iterations)
-                        cmdline = executor_cmdline + cmdline
-
-                        if "variable_values" in benchmark[benchmark_name]:
-                            variable_values = benchmark[benchmark_name][
-                                "variable_values"
-                            ]
-                            for variable_value in variable_values:
-                                commands.append(
-                                    cmdline + [str(variable_value)]
-                                )
-                        elif "variable_values" in suite:
-                            variable_values = benchmark[benchmark_name][
-                                "variable_values"
-                            ]
-                            for variable_value in variable_values:
-                                commands.append(
-                                    cmdline + [str(variable_value)]
-                                )
-                        else:
-                            commands.append(cmdline + cmdline)
-
-
-                        for cmdline in commands:
-                            cmdline = _fill_blank_command(
-                                cmdline, "%(benchmark)s", benchmark_name
+                        for benchmark in benchmarks:
+                            benchmark_name = next(iter(benchmark))
+                            extra_args = (
+                                benchmark[benchmark_name]["extra_args"]
+                                if "extra_args" in benchmark[benchmark_name]
+                                else None
                             )
 
-                            for invocation in range(1, invocations + 1):
-                                output = subprocess.check_output(cmdline)
-                                output_lines = output.splitlines()
+                            commands = []
 
-                                for iteration, output_line in enumerate(output_lines):
-                                    p_runtime = re.compile(b"(?<=runtime: )[0-9]+")
-                                    r_runtime = p_runtime.search(output_line)
-                                    if r_runtime:
-                                        v_runtime = float(r_runtime.group())
+                            cmdline = suite["command"].split()
+                            cmdline = self._fill_blank_command(
+                                cmdline, "%(iterations)s", iterations
+                            )
+                            cmdline = executor_cmdline + cmdline
 
-                                        formatted = "{}\t{}\t{}\t{}\t{}\n".format(
-                                            invocation, iteration, v_runtime, benchmark_name, exec_name
-                                        )
+                            if "variable_values" in benchmark[benchmark_name]:
+                                variable_values = benchmark[benchmark_name][
+                                    "variable_values"
+                                ]
+                                for variable_value in variable_values:
+                                    commands.append(cmdline + [str(variable_value)])
+                            elif "variable_values" in suite:
+                                variable_values = benchmark[benchmark_name][
+                                    "variable_values"
+                                ]
+                                for variable_value in variable_values:
+                                    commands.append(cmdline + [str(variable_value)])
+                            else:
+                                commands.append(cmdline + cmdline)
 
-                                        with open(default_data_file_path, "a") as data_file:
-                                            data_file.write(formatted)
+                            for cmdline in commands:
+                                self._execute_and_dump_result(
+                                    cmdline,
+                                    benchmark_name,
+                                    executor,
+                                    invocations,
+                                )
 
-            os.chdir(base_dir)
+                os.chdir(self.base_dir)
+
 
 def reset():
     _reset_shielding()
@@ -195,4 +206,5 @@ def main():
 if __name__ == "__main__":
     # main()
     conf = _parse_conf("test.conf")
-    execute_suites(conf)
+    executor = Executor(conf)
+    executor.execute()
