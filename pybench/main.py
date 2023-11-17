@@ -7,49 +7,7 @@ from pprint import pprint
 import yaml
 from cpuinfo import get_cpu_info
 
-
-def _shield_num_core_bounds(num_core):
-    lower = int(math.floor(math.log(num_core)))
-    upper = num_core - 1
-    return lower, upper
-
-
-def _activate_shielding(num_core):
-    lower, upper = _shield_num_core_bounds(num_core)
-    shielded_core = "%d-%d" % (lower, upper)
-    cmdline = ["cset", "shield", "-c", shielded_core]
-    try:
-        output = subprocess.check_output(cmdline, stderr=subprocess.STDOUT)
-
-    except (subprocess.CalledProcessError, OSError):
-        return "failed"
-
-
-def _reset_shielding():
-    cmdline = ["cset", "shield", "-r"]
-    try:
-        output = subprocess.check_output(cmdline, stderr=subprocess.STDOUT)
-
-    except (subprocess.CalledProcessError, OSError):
-        return "failed"
-
-
-def _set_no_turbo(with_no_turbo, brand):
-    try:
-        if brand == "Intel":
-            value = str(int(with_no_turbo))
-            with open("/sys/devices/system/cpu/intel_pstate/no_turbo", "w") as nt_file:
-                nt_file.write(value + "\n")
-            return with_no_turbo
-        elif brand == "AMD":
-            value = str(int(not with_no_turbo))
-            with open("/sys/devices/system/cpu/cpufreq/boost", "w") as nt_file:
-                nt_file.write(value + "\n")
-            return with_no_turbo
-        else:
-            return "failed"
-    except IOError:
-        return "failed"
+from pybench.shield import _shield_num_core_bounds, _activate_shielding, _reset_shielding, _set_no_turbo
 
 
 class NotFound(Exception):
@@ -92,6 +50,7 @@ def _parse_conf(path):
         "default_data_file": default_data_file,
         "experiments": experiments,
         "suites": suites,
+        "executors": executors,
         "executables": executables,
     }
 
@@ -105,8 +64,9 @@ def _parse_cpu_brand(brand):
         return "Unknown"
 
 
-def _print_header():
-    print("iteration\tvalue\tbenchmark\texecutor")
+def _write_header(data_file_path):
+    with open(data_file_path, "w") as f:
+        f.write("invocation\titeration\tvalue\tbenchmark\texecutor\n")
 
 
 def _fill_blank_command(command, variable, value):
@@ -121,23 +81,37 @@ def execute_suites(configuration):
     default_data_file = configuration["default_data_file"]
     experiments = configuration["experiments"]
     suites = configuration["suites"]
+    executors = configuration["executors"]
     executables = configuration["executables"]
 
-    _print_header()
+    base_dir = os.getcwd()
+
+    default_data_file_path = base_dir + "/" + default_data_file
+
+    _write_header(default_data_file_path)
 
     for exp_name in experiments:
         executions = experiments[exp_name]["executions"]
         for execution in executions:
             for exec_name in execution:
                 exec_suites = execution[exec_name]["suites"]
-                executable = executables[exec_name]
+                executor = executors[exec_name]
+                executor_path = executor["path"]
+                executor_executable = "./" + executor["executable"]
+                executor_cmdline = [executor_executable]
+
+                executor_args = None
+                if "args" in executor:
+                    executor_args = executor["args"].split()
+                    executor_cmdline.extend(executor_args)
+
+                os.chdir(executor_path)
+
                 for exec_suite in exec_suites:
                     suite = suites[exec_suite]
                     benchmarks = suite["benchmarks"]
-                    cmdline = suite["command"].split()
                     iterations = suite["iterations"]
                     invocations = suite["invocations"]
-                    cmdline = _fill_blank_command(cmdline, "%(iterations)s", iterations)
 
                     for benchmark in benchmarks:
                         benchmark_name = next(iter(benchmark))
@@ -148,13 +122,18 @@ def execute_suites(configuration):
                         )
 
                         commands = []
+
+                        cmdline = suite["command"].split()
+                        cmdline = _fill_blank_command(cmdline, "%(iterations)s", iterations)
+                        cmdline = executor_cmdline + cmdline
+
                         if "variable_values" in benchmark[benchmark_name]:
                             variable_values = benchmark[benchmark_name][
                                 "variable_values"
                             ]
                             for variable_value in variable_values:
                                 commands.append(
-                                    [executable] + cmdline + [str(variable_value)]
+                                    cmdline + [str(variable_value)]
                                 )
                         elif "variable_values" in suite:
                             variable_values = benchmark[benchmark_name][
@@ -162,31 +141,35 @@ def execute_suites(configuration):
                             ]
                             for variable_value in variable_values:
                                 commands.append(
-                                    [executable] + cmdline + [str(variable_value)]
+                                    cmdline + [str(variable_value)]
                                 )
                         else:
-                            commands.append([executable] + cmdline)
+                            commands.append(cmdline + cmdline)
+
 
                         for cmdline in commands:
                             cmdline = _fill_blank_command(
                                 cmdline, "%(benchmark)s", benchmark_name
                             )
-                            if "extra_args" in benchmark[benchmark_name]:
-                                cmdline = cmdline + [
-                                    str(benchmark[benchmark_name]["extra_args"])
-                                ]
 
-                            for iteration in range(1, iterations + 1):
-                                out = subprocess.check_output(cmdline)
-                                p_runtime = re.compile(r"(?<=runtime: )[0-9]+")
-                                r_runtime = p_runtime.search(str(out))
-                                v_runtime = float(r_runtime.group())
+                            for invocation in range(1, invocations + 1):
+                                output = subprocess.check_output(cmdline)
+                                output_lines = output.splitlines()
 
-                                formatted = "{}\t{}\t{}\t{}".format(
-                                    iteration, v_runtime, benchmark_name, exec_name
-                                )
-                                print(formatted)
+                                for iteration, output_line in enumerate(output_lines):
+                                    p_runtime = re.compile(b"(?<=runtime: )[0-9]+")
+                                    r_runtime = p_runtime.search(output_line)
+                                    if r_runtime:
+                                        v_runtime = float(r_runtime.group())
 
+                                        formatted = "{}\t{}\t{}\t{}\t{}\n".format(
+                                            invocation, iteration, v_runtime, benchmark_name, exec_name
+                                        )
+
+                                        with open(default_data_file_path, "a") as data_file:
+                                            data_file.write(formatted)
+
+            os.chdir(base_dir)
 
 def reset():
     _reset_shielding()
@@ -198,7 +181,7 @@ def main():
     brand = _parse_cpu_brand(cpuinfo["brand_raw"])
     num_core = int(cpuinfo["count"])
 
-    result = activate_shielding(num_core)
+    result = _activate_shielding(num_core)
     if result == "failed":
         print("setting cpu shielding is failed.")
 
